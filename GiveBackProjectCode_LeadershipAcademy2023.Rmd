@@ -1,0 +1,264 @@
+---
+title: "Analysis of COVID-19 Data (Give Back Project)"
+author: "Emmalyn Campau"
+date: "2023-10-21"
+output: html_document
+---
+
+## Load libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lubridate)
+library(dplyr)
+library(devtools)
+```
+
+## Download data
+Data comes from CDC
+```{r data}
+deaths <- read.csv("covid19_hospital_admissions_and_weekly_death_rate.csv")
+vaccines <- read.csv("COVID-19_Vaccines_Up_to_Date_Status.csv")
+vaccines_primary <- read.csv("covid19_vaccines_primary.csv")
+demographics <- read.csv("Case_Surveillance_data.csv")
+positivity <- read.csv("covid19_positivity.csv")
+vaccines_time <- read.csv("vaccine_trends_time.csv")
+```
+
+## View data
+```{r view}
+head(deaths)
+head(vaccines_primary)
+head(demographics)
+head(positivity)
+
+nrow(deaths)
+nrow(vaccines_primary)
+nrow(demographics)
+nrow(positivity)
+```
+
+# Remove columns 
+``` {r columns}
+# Change time
+deaths$Date_new <- parse_date_time(deaths$Date, orders = "mdy")
+positivity$Date_new <- parse_date_time(positivity$Date, orders = "mdy")
+names(positivity)[2] <- "Pos_rate"
+positivity$Pos_rate <- as.numeric(positivity$Pos_rate)
+# Remove Data As - all are equal to October 13
+# Remove country because all are US counts
+deaths <- subset(deaths, select= -c(Death.Data.As.Of, Geography))
+
+# Join positivity to deaths
+death_pos <- left_join(deaths, positivity, by = "Date_new")
+death_pos <- subset(death_pos, select= -c(Date.y, Date.x))
+# Update types
+death_pos$Weekly_Admissions <- as.double(death_pos$Weekly_Admissions)
+death_pos$Weekly_Death_Rate <- as.double(death_pos$Weekly_Death_Rate)
+death_pos$Test_Vol <- as.double(death_pos$Test_Vol)
+death_pos <- na.omit(death_pos)
+
+# Update demographics database
+demographics <- na.omit(demographics)
+#only include male/female
+demographics <- demographics[which(demographics$sex == 'Female' | demographics$sex == 'Male'), ]
+#only include yes or no for death, hospital, icu column
+demographics <- demographics[which(demographics$hosp_yn == 'Yes' | demographics$hosp_yn == 'No'), ]
+demographics <- demographics[which(demographics$icu_yn == 'Yes' | demographics$icu_yn == 'No'), ]
+demographics <- demographics[which(demographics$death_yn == 'Yes' | demographics$death_yn == 'No'), ]
+# only investigate confirmed cases
+demographics <- demographics[which(demographics$current_status == 'Laboratory-confirmed case'), ]
+
+# Vaccines over time database
+vaccines_time$Date <- parse_date_time(vaccines_time$Date, orders = "ymd")
+vaccines_time$Date <- as.Date(vaccines_time$Date)
+vaccines_time <- vaccines_time[, -c(2, 4, 5)]
+```
+
+# Rename Columns
+``` {r rename}
+names(death_pos)[1] <- "Weekly_Admissions"
+names(death_pos)[2] <- "Weekly_Death_Rate"
+names(death_pos)[4] <- "Weekly_Test_Pos"
+names(death_pos)[5] <- "Test_Vol"
+
+#remove NA
+death_pos <- na.omit(death_pos)
+death_pos$Weekly_Test_Pos <- as.numeric(death_pos$Weekly_Test_Pos)
+```
+
+# Create some basic plots 
+``` {r plots}
+# Positive cases over time
+class(death_pos$Date_new)
+death_pos$Date_new <- as.Date(death_pos$Date_new)
+ggplot() +
+  geom_line(aes(death_pos$Date_new, death_pos$Weekly_Test_Pos, col='Weekly Test Positivity')) + 
+  # divide by 100000 because othwe rates are per 100000 people
+  geom_line(aes(death_pos$Date_new, death_pos$Weekly_Admissions/100000, col='Weekly Hospital Admissions')) + 
+  geom_line(aes(death_pos$Date_new, death_pos$Weekly_Death_Rate, col='Weekly COVID-19 Deaths')) +
+  #geom_line(aes(vaccines_time$Date, vaccines_time$Percent.of.People.who.Received.Bivalent.Booster.Dose)) +
+  scale_x_date(date_breaks = "6 months", date_labels="%m-%Y") + 
+  xlab("Date") +
+  ylab("Rate Per 100000 People") +
+  scale_color_manual(name='Plot',
+                     breaks=c('Weekly Test Positivity', 'Weekly Hospital Admissions', 'Weekly COVID-19 Deaths'),
+                     values=c('Weekly Test Positivity'='red2', 
+                              'Weekly Hospital Admissions'='magenta3', 
+                              'Weekly COVID-19 Deaths' = 'green3'))
+
+class(vaccines_time$Date)
+
+# Hospitalizations and deaths over time
+plot(death_pos$Date_new, death_pos$Weekly_Admissions, type = 'l',
+     xlab= "Date", ylab= "Weekly Hospital Admissions", 
+     col = 'blue')
+points(x= death_pos$Date_new, y=(death_pos$Weekly_Test_Pos)*10000, col='pink', pch=16) 
+
+```
+## Plots for vaccines
+``` {r maptools}
+# Install map data
+install_github("UrbanInstitute/urbnmapr")
+```
+
+``` {r vaccines}
+#vaccines <- vaccines[which(vaccines$Demographic_Category == 'Sex_Female' | 
+                            # vaccines$Demographic_Category == 'Sex_Male' | 
+                            # vaccines$Demographic_Category == 'Sex_Unknown'), ]
+#vaccines_asOfOct <- vaccines[which(vaccines$Date == '10/11/2023'), ]
+
+library(tidyverse)
+library(urbnmapr)
+
+
+# Change column name on vaccines data - columns to keep = 1, 14, 53
+new_vaccines <- vaccines_primary[, c(1, 14, 53)]
+names(new_vaccines)[1] <- "state_name"
+names(new_vaccines)[2] <- "percent_primary"
+names(new_vaccines)[3] <- "percent_boosted"
+head(states)
+
+#Change columns to decimal instead of strings
+new_vaccines$percent_primary <- as.numeric(new_vaccines$percent_primary)
+new_vaccines$percent_boosted <- as.numeric(new_vaccines$percent_boosted)
+
+state_data <- right_join(new_vaccines, states, by="state_name")
+
+# Map of boosted people
+state_data %>%
+  ggplot(data = state_data, mapping = aes(x = long, y = lat, group = group, fill = percent_boosted)) + 
+  geom_polygon(color = 'white', size = .25) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  scale_fill_gradient(low = 'lightblue', high = 'darkblue', name= "Percent Boosted") +
+  theme(legend.title = element_text(), legend.key.width = unit(.5, "in")) 
+
+# Map of primary vaccinated people
+state_data %>%
+  ggplot(data = state_data, mapping = aes(x = long, y = lat, group = group, fill = percent_primary)) + 
+  geom_polygon(color = 'white', size = .25) +
+  coord_map(projection = "albers", lat0 = 39, lat1 = 45) +
+  scale_fill_gradient(low = 'lightblue', high = 'darkblue', name= "Percent with \nPrimary Vaccines") +
+  theme(legend.title = element_text(), legend.key.width = unit(.5, "in"))
+
+# Primary vs booster percentages
+ggplot() +
+  geom_line(aes(vaccines_time$Date, vaccines_time$Percent.of.People.with.Complete.Primary.Series, col='Completed Primary Series')) +
+  geom_line(aes(vaccines_time$Date, vaccines_time$Percent.of.People.who.Received.Bivalent.Booster.Dose, col='Completed Bivalent Booster')) +
+  theme(panel.background = element_rect(fill = "whitesmoke", colour = "lightskyblue3",
+                                size = 2, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.5, linetype = 'solid',
+                                colour = "white"), 
+        panel.grid.minor = element_line(size = 0.25, linetype = 'solid',
+                                colour = "white"), 
+        plot.background = element_rect(fill = "lightskyblue3"), 
+        legend.title=element_text(size=10),
+        legend.text=element_text(size=8),
+        legend.position = 'right') +
+  ylab("Percentage of US Population") +
+  xlab("Date") +
+  ggtitle("Percentage of US Citizens with Vaccines and Boosters") +
+  scale_color_manual(name='Plot',
+                     breaks=c('Completed Primary Series', 'Completed Bivalent Booster'),
+                     values=c('Completed Primary Series'='darkblue', 'Completed Bivalent Booster'='magenta4'))
+  
+```
+
+# Explore demographics 
+``` {r explore}
+# Mean females who died
+num_female_deaths <- length(which(demographics$sex == 'Female' & demographics$death_yn == 'Yes'))
+num_female_deaths
+num_female <- length(which(demographics$sex == 'Female'))
+num_female
+num_female_deaths/num_female
+
+# Mean males who died
+num_male_deaths <- length(which(demographics$sex == 'Male' & demographics$death_yn == 'Yes'))
+num_male_deaths
+num_male <- length(which(demographics$sex == 'Male'))
+num_male
+num_male_deaths/num_male
+
+# Explore race
+table(demographics$race_ethnicity_combined)
+
+# Percentage of white people who died
+num_white_deaths <- length(which(demographics$race_ethnicity_combined == 'White, Non-Hispanic' & demographics$death_yn == 'Yes'))
+num_white <- length(which(demographics$race_ethnicity_combined == 'White, Non-Hispanic'))
+num_white_deaths/num_white
+# Percentage of black people who died
+num_black_deaths <- length(which(demographics$race_ethnicity_combined == 'Black, Non-Hispanic' & demographics$death_yn == 'Yes'))
+num_black <- length(which(demographics$race_ethnicity_combined == 'Black, Non-Hispanic'))
+num_black_deaths/num_black
+# Percentage of Asian people who died
+num_asian_deaths <- length(which(demographics$race_ethnicity_combined == 'Asian, Non-Hispanic' & demographics$death_yn == 'Yes'))
+num_asian <- length(which(demographics$race_ethnicity_combined == 'Asian, Non-Hispanic'))
+num_asian_deaths/num_asian
+
+
+# Combination of Age and Race
+
+
+
+# Explore age
+table(demographics$age_group)
+```
+Results show that only 1.2% of females positive for COVID died, while 18.5% of men with COVID died. 
+0.12% of white people died and 32.2% of black people died. 
+
+
+``` {r hypothesis}
+# Hypothesis- that model with gender will perform better
+
+# remove unknowns
+demographics_clean <- demographics[which(demographics$race_ethnicity_combined != 'Unknown' & 
+                                         demographics$race_ethnicity_combined != 'Missing' &
+                                         demographics$age_group != 'Missing' &
+                                         demographics$death_yn != 'Missing' &
+                                         demographics$medcond_yn != 'Missing' &
+                                         demographics$medcond_yn != 'Unknown'), ]
+head(demographics_clean)
+
+# Regression model
+# split data
+demographics_clean$death_yn_factor <- ifelse(demographics_clean$death_yn == 'Yes', 1, 0)
+
+
+split <- round(nrow(demographics_clean) * 0.70)
+ind <- sample(seq_len(nrow(demographics_clean)), size = split)
+demo_train <- demographics_clean[ind,]
+demo_test <- demographics_clean[ind,]
+
+table(demo_train$sex)
+table(demographics_clean$race_ethnicity_combined)
+
+regression_simple <- lm(death_yn_factor ~ sex + hosp_yn + medcond_yn + race_ethnicity_combined, data = demographics_clean)
+summary(regression_simple)
+#regression_simple_sex <- lm(death_yn_factor ~ medcond_yn + race_ethnicity_combined 
+#                            + hosp_yn + sex, data = demographics_clean)
+#summary(regression_simple_sex)
+
+# potential limitations: many of the partcipants/ individuals with data in this dataset are white
+# many are also female
+```
+
